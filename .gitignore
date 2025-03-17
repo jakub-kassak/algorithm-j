@@ -1,0 +1,21 @@
+# Ignore the target directory
+/target
+
+# Ignore build artifacts
+**/*.rs.bk
+**/*.rlib
+
+# Ignore generated files
+*.log
+*.tmp
+*.swp
+*.bak
+
+# Ignore IDE/editor-specific files
+.idea/
+.vscode/
+*.iml
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
