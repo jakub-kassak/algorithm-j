@@ -3,7 +3,7 @@ mod infer;
 mod lexer;
 mod parser;
 
-use infer::{infer, string_of_type, TypeInferenceContext};
+use infer::{infer, string_of_type, Env, TypeInferenceContext};
 use parser::Parser;
 use std::collections::HashMap;
 use std::vec;
@@ -15,7 +15,8 @@ fn check(input: &str, expected: &str) -> bool {
     let expr = parser.parse();
 
     let mut ctx = TypeInferenceContext::new();
-    let mut env = HashMap::new();
+    let mut map = HashMap::new();
+    let mut env = Env::new(&mut map);
     let typ = infer(&mut ctx, &mut env, &expr);
     let str_typ = string_of_type(&typ);
     let res = expected == str_typ;
@@ -25,9 +26,11 @@ fn check(input: &str, expected: &str) -> bool {
 
 fn main() {
     let a = vec![
+        (r#"let x = let y = () in y in x"#, "()"),
+        (r#"let x = () in let x = x in x"#, "()"),
+        (r#"\x. x ()"#, "(() -> a) -> a"),
         (r#"let id = \x.x in id id"#, "a -> a"),
-        (r#"\x. x"#, "a -> a"),
-        (r#"let x = () in x"#, "unit"),
+        (r#"let x = () in x"#, "()"),
         (r#"\n.\f.\x. n f x"#, "(a -> b -> c) -> a -> b -> c"),
         (r#"\x.\y.x"#, "a -> b -> a"),
         (r#"\f.\x. f x"#, "(a -> b) -> a -> b"),

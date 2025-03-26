@@ -91,7 +91,53 @@ impl TypeInferenceContext {
 
 // --- Helper Functions ---
 
-type Env = HashMap<String, PolyType>;
+#[derive(Debug)]
+pub struct Env<'a> {
+    map: &'a mut HashMap<String, PolyType>,
+    modifications: Vec<(String, Option<PolyType>)>,
+}
+
+impl<'a> Env<'a> {
+    pub fn new(map: &'a mut HashMap<String, PolyType>) -> Self {
+        Env {
+            map,
+            modifications: vec![],
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&PolyType> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: String, value: PolyType) {
+        let old_value = self.map.insert(key.clone(), value);
+        self.modifications.push((key, old_value));
+    }
+    
+    fn child(&mut self) -> Env<'_> {
+        Env {
+            map: self.map,
+            modifications: vec![],
+        }
+    }
+}
+
+impl Drop for Env<'_> {
+    fn drop(&mut self) {
+        for (key, old_value) in self.modifications.drain(..) {
+            match old_value {
+                Some(value) => {
+                    self.map.insert(key, value);
+                }
+                None => {
+                    self.map.remove(&key);
+                }
+            }
+        }
+    }
+}
+
+// type Env = HashMap<String, PolyType>;
 
 // Instantiates a polytype by replacing its bound type variables with fresh monotypes
 fn inst(ctx: &mut TypeInferenceContext, poly: &PolyType) -> Type {
@@ -265,13 +311,9 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
         Expr::Lam { ident, body } => {
             let t = ctx.newvar_t();
             let poly_t: PolyType = dont_generalize(t.clone());
-            let old_value = env.remove(ident);
-            env.insert(ident.clone(), poly_t);
-            let t_prime = infer(ctx, env, body);
-            env.remove(ident);
-            if let Some(old_poly_t) = old_value {
-                env.insert(ident.clone(), old_poly_t);
-            }
+            let new_env = &mut env.child();
+            new_env.insert(ident.clone(), poly_t);
+            let t_prime = infer(ctx, new_env, body);
             Type::Fn(Box::new(t), Box::new(t_prime))
         }
         // Let
@@ -287,14 +329,9 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
             let t = infer(ctx, env, value);
             ctx.exit_level();
             let poly_t = generalize(ctx, &t);
-            let old_value = env.remove(ident);
-            env.insert(ident.clone(), poly_t);
-            let result = infer(ctx, env, body);
-            env.remove(ident);
-            if let Some(old_poly_t) = old_value {
-                env.insert(ident.clone(), old_poly_t);
-            }
-            result
+            let new_env = &mut env.child();
+            new_env.insert(ident.clone(), poly_t);
+            infer(ctx, new_env, body)
         }
     }
 }
@@ -313,7 +350,7 @@ fn string_of_type_helper(
     next_name: &mut char,
 ) -> (String, bool) {
     match t {
-        Type::TUnit => ("unit".to_string(), false),
+        Type::TUnit => ("()".to_string(), false),
         Type::TRef(tv) => match &*tv.borrow() {
             TypeVar::Link(inner_t) => string_of_type_helper(inner_t, name_map, next_name),
             TypeVar::Unbound { id, level: _ } => {
