@@ -1,7 +1,6 @@
 use crate::ast::Expr;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::ops::Bound;
 use std::rc::Rc;
 
 // --- Type Definitions ---
@@ -9,7 +8,15 @@ use std::rc::Rc;
 #[derive(Clone, Debug)]
 pub enum Type {
     TUnit,
+    // 'a, 'b, etc. *)
+    // A reference to a bound or unbound typevar, set during unification.
+    // This is unique to algorithm J where mutation is needed to remember
+    // some substitutions.
+    // The level of this typevar identifies how many let-bindings deep it was
+    // declared in. This is used to prevent generalization of typevars that
+    // escape outside the current let-binding scope. *)
     TVar(Rc<RefCell<TypeVar>>),
+    // 'a -> 'b, all functions are single-argument only *)
     Fn(Box<Type>, Box<Type>),
 }
 
@@ -17,6 +24,14 @@ impl Type {
     pub fn new_fn(a: Type, b: Type) -> Self {
         Type::Fn(Box::new(a), Box::new(b))
     }
+
+    // /// Returns `true` if the type is [`TArr`].
+    // ///
+    // /// [`TArr`]: Type::TArr
+    // #[must_use]
+    // pub fn is_tarr(&self) -> bool {
+    //     matches!(self, Self::Fn(..))
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -26,20 +41,6 @@ pub enum TypeVar {
 }
 
 impl TypeVar {
-    fn get_bound(&self) -> Option<&Type> {
-        match self {
-            TypeVar::Bound(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    fn get_unbound(&self) -> Option<(usize, usize)> {
-        match self {
-            TypeVar::Unbound(id, level) => Some((*id, *level)),
-            _ => None,
-        }
-    }
-
     fn set_level(&mut self, new_level: usize) {
         if let TypeVar::Unbound(_, level) = self {
             *level = new_level;
@@ -124,19 +125,16 @@ fn inst(ctx: &mut TypeInferenceContext, poly: &PolyType) -> Type {
 
 // Replaces type variables in a type according to a substitution table
 fn replace_tvs(tbl: &HashMap<usize, Type>, t: &Type) -> Type {
+    // dbg!(t);
     match t {
         Type::TUnit => Type::TUnit,
-        Type::TVar(tv) => {
-            if let Some(inner_t) = tv.borrow().get_bound() {
-                replace_tvs(tbl, inner_t)
-            } else if let Some((n, _)) = tv.borrow().get_unbound() {
-                tbl.get(&n)
-                    .cloned()
-                    .unwrap_or_else(|| Type::TVar(tv.clone()))
-            } else {
-                unreachable!()
-            }
-        }
+        Type::TVar(tv) => match &*tv.borrow() {
+            TypeVar::Bound(inner_t) => replace_tvs(tbl, inner_t),
+            TypeVar::Unbound(n, _) => tbl
+                .get(n)
+                .cloned()
+                .unwrap_or_else(|| Type::TVar(tv.clone())),
+        },
         Type::Fn(a, b) => {
             let a_new = replace_tvs(tbl, a);
             let b_new = replace_tvs(tbl, b);
@@ -150,16 +148,14 @@ fn occurs(a_id: usize, a_level: usize, t: &Type) -> bool {
     match t {
         Type::TUnit => false,
         Type::TVar(tv) => {
-            if let Some(inner_t) = tv.borrow().get_bound() {
-                return occurs(a_id, a_level, inner_t);
+            match &mut *tv.borrow_mut() {
+                TypeVar::Bound(t2) => occurs(a_id, a_level, t2),
+                TypeVar::Unbound(b_id, b_level) => {
+                    let min_level = a_level.min(*b_level);
+                    *b_level = min_level;
+                    *b_id == a_id
+                }
             }
-            let tv_unboud = tv.borrow().get_unbound();
-            if let Some((b_id, b_level)) = tv_unboud {
-                let min_level = a_level.min(b_level);
-                tv.borrow_mut().set_level(min_level);
-                return b_id == a_id;
-            };
-            unreachable!()
         }
         Type::Fn(arg, ret) => occurs(a_id, a_level, arg) || occurs(a_id, a_level, ret),
     }
@@ -185,19 +181,8 @@ fn unify(t1: &Type, t2: &Type) {
                 *tv1.borrow_mut() = TypeVar::Bound(t2.clone());
             }
         }
-        (_, Type::TVar(tv2)) => {
-            let mut tv2_borrow = tv2.borrow_mut();
-            if let Some(inner_t) = tv2_borrow.get_bound() {
-                unify(t1, inner_t);
-            } else if let TypeVar::Unbound(b_id, b_level) = *tv2_borrow {
-                if occurs(b_id, b_level, t1) {
-                    panic!("TypeError: occurs check failed");
-                } else {
-                    *tv2_borrow = TypeVar::Bound(t1.clone());
-                }
-            } else {
-                unreachable!()
-            }
+        (_, Type::TVar(_)) => {
+            unify(t2, t1);
         }
         (Type::Fn(a, b), Type::Fn(c, d)) => {
             unify(a, c);
@@ -225,15 +210,16 @@ fn find_all_tvs(ctx: &TypeInferenceContext, t: &Type) -> HashSet<usize> {
 fn find_all_tvs_helper(set: &mut HashSet<usize>, current_level: usize, t: &Type) {
     match t {
         Type::TUnit => {}
-        Type::TVar(tv) => {
-            if let Some(inner_t) = tv.borrow().get_bound() {
+        Type::TVar(tv) => match &*tv.borrow() {
+            TypeVar::Bound(inner_t) => {
                 find_all_tvs_helper(set, current_level, inner_t);
-            } else if let Some((id, level)) = tv.borrow().get_unbound() {
-                if level > current_level {
-                    set.insert(id);
+            }
+            TypeVar::Unbound(id, level) => {
+                if *level > current_level {
+                    set.insert(*id);
                 }
             }
-        }
+        },
         Type::Fn(a, b) => {
             find_all_tvs_helper(set, current_level, a);
             find_all_tvs_helper(set, current_level, b);
@@ -250,7 +236,7 @@ fn dont_generalize(t: Type) -> PolyType {
 }
 
 // Main type inference function
-pub fn infer(ctx: &mut TypeInferenceContext, env: &Env, expr: &Expr) -> Type {
+pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type {
     match expr {
         Expr::Unit => Type::TUnit,
         // Var
@@ -279,11 +265,7 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &Env, expr: &Expr) -> Type {
             if let Type::Fn(_, ty_res) = t_fn {
                 *ty_res
             } else {
-                unreachable!()
-            match t_fn {
-                Type::Fn(_, b) => *b,
-                _ => panic!("TypeError: expected function type"),
-            }
+                unreachable!();
             }
         }
         // Abs
@@ -294,10 +276,13 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &Env, expr: &Expr) -> Type {
         //
         Expr::Lam { ident, body } => {
             let t = ctx.newvar_t();
-            let poly_t = dont_generalize(t.clone());
-            let mut new_env = env.clone();
-            new_env.insert(ident.clone(), poly_t);
-            let t_prime = infer(ctx, &new_env, body);
+            let poly_t: PolyType = dont_generalize(t.clone());
+            let old_value = env.remove(ident);
+            env.insert(ident.clone(), poly_t);
+            let t_prime = infer(ctx, env, body);
+            if let Some(old_poly_t) = old_value {
+                env.insert(ident.clone(), old_poly_t);
+            }
             Type::Fn(Box::new(t), Box::new(t_prime))
         }
         // Let
@@ -316,9 +301,13 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &Env, expr: &Expr) -> Type {
             let t = infer(ctx, env, value);
             ctx.exit_level();
             let poly_t = generalize(ctx, &t);
-            let mut new_env = env.clone();
-            new_env.insert(ident.clone(), poly_t);
-            infer(ctx, &new_env, body)
+            let old_value = env.remove(ident);
+            env.insert(ident.clone(), poly_t);
+            let result = infer(ctx, env, body);
+            if let Some(old_poly_t) = old_value {
+                env.insert(ident.clone(), old_poly_t);
+            }
+            result
         }
     }
 }
@@ -338,12 +327,11 @@ fn string_of_type_helper(
 ) -> (String, bool) {
     match t {
         Type::TUnit => ("unit".to_string(), false),
-        Type::TVar(tv) => {
-            if let Some(inner_t) = tv.borrow().get_bound() {
-                string_of_type_helper(inner_t, name_map, next_name)
-            } else if let Some((id, _)) = tv.borrow().get_unbound() {
+        Type::TVar(tv) => match &*tv.borrow() {
+            TypeVar::Bound(inner_t) => string_of_type_helper(inner_t, name_map, next_name),
+            TypeVar::Unbound(id, _) => {
                 let name = name_map
-                    .entry(id)
+                    .entry(*id)
                     .or_insert_with(|| {
                         let name = next_name.to_string();
                         *next_name = char::from_u32(*next_name as u32 + 1).unwrap_or('a');
@@ -351,19 +339,15 @@ fn string_of_type_helper(
                     })
                     .clone();
                 (name, false)
-            } else {
-                unreachable!()
             }
-        }
+        },
         Type::Fn(a, b) => {
             let (a_str, a_has_fn) = string_of_type_helper(a, name_map, next_name);
             let (b_str, _) = string_of_type_helper(b, name_map, next_name);
-            if a_has_fn {
-                (format!("({}) -> {}", a_str, b_str), true)
-            } else {
-                (format!("{} -> {}", a_str, b_str), true)
+            match a_has_fn {
+                true => (format!("({}) -> {}", a_str, b_str), true),
+                false => (format!("{} -> {}", a_str, b_str), true),
             }
-            // (format!("({} -> {})", a_str, b_str), true)
         }
     }
 }
