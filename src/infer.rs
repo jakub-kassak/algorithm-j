@@ -3,11 +3,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+
 // --- Type Definitions ---
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Type {
-    TUnit,
+    Unit,
+    Int,
     // A reference to a bound or unbound typevar, set during unification.
     // This is unique to algorithm J where mutation is needed to remember
     // some substitutions.
@@ -20,9 +22,20 @@ impl Type {
     pub fn new_fn(a: Type, b: Type) -> Self {
         Type::Fn(Box::new(a), Box::new(b))
     }
+
+    fn is_int(&self) -> bool {
+        match self {
+            Type::Int => true,
+            Type::TRef(tv) => match &*tv.borrow() {
+                TypeVar::Link(inner_t) => inner_t.is_int(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TypeVar {
     Link(Type),
     Unbound { id: usize, level: usize },
@@ -113,7 +126,7 @@ impl<'a> Env<'a> {
         let old_value = self.map.insert(key.clone(), value);
         self.modifications.push((key, old_value));
     }
-    
+
     fn child(&mut self) -> Env<'_> {
         Env {
             map: self.map,
@@ -152,7 +165,8 @@ fn inst(ctx: &mut TypeInferenceContext, poly: &PolyType) -> Type {
 // Replaces type variables in a type according to a substitution table
 fn replace_tvs(tbl: &HashMap<usize, Type>, t: &Type) -> Type {
     match t {
-        Type::TUnit => Type::TUnit,
+        Type::Unit => Type::Unit,
+        Type::Int => Type::Int,
         Type::TRef(tv) => match &*tv.borrow() {
             TypeVar::Link(inner_t) => replace_tvs(tbl, inner_t),
             TypeVar::Unbound { id, level: _ } => {
@@ -174,7 +188,8 @@ fn replace_tvs(tbl: &HashMap<usize, Type>, t: &Type) -> Type {
 // Checks if a type variable occurs in a type, updating levels as needed
 fn occurs(a_id: usize, a_level: usize, t: &Type) -> bool {
     match t {
-        Type::TUnit => false,
+        Type::Unit => false,
+        Type::Int => false,
         Type::TRef(tv) => match &mut *tv.borrow_mut() {
             TypeVar::Link(t2) => occurs(a_id, a_level, t2),
             TypeVar::Unbound {
@@ -201,8 +216,12 @@ fn unify(t1: &Type, t2: &Type) {
     }
 
     match (t1, t2) {
-        (Type::TUnit, Type::TUnit) => (),
+        (Type::Unit, Type::Unit) => (),
+        (Type::Int, Type::Int) => (),
         (Type::TRef(tv1), _) => {
+            if t1 == t2 {
+                return;
+            }
             let (a_id, a_level) = match *tv1.borrow() {
                 TypeVar::Link(ref t) => {
                     return unify(t, t2);
@@ -222,8 +241,8 @@ fn unify(t1: &Type, t2: &Type) {
             unify(t2, t1);
         }
         (Type::Fn(a, b), Type::Fn(c, d)) => {
-            unify(a, c);
-            unify(b, d);
+            unify(c, a);
+            unify(d, b);
         }
         _ => {
             panic!("TypeError: cannot unify");
@@ -248,7 +267,8 @@ fn find_all_tvs(ctx: &TypeInferenceContext, t: &Type) -> HashSet<usize> {
 
 fn find_all_tvs_helper(set: &mut HashSet<usize>, current_level: usize, t: &Type) {
     match t {
-        Type::TUnit => (),
+        Type::Unit => (),
+        Type::Int => (),
         Type::TRef(tv) => match &*tv.borrow() {
             TypeVar::Link(inner_t) => find_all_tvs_helper(set, current_level, inner_t),
             TypeVar::Unbound { id, level } => {
@@ -275,12 +295,13 @@ fn dont_generalize(t: Type) -> PolyType {
 // Main type inference function
 pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type {
     match expr {
-        Expr::Unit => Type::TUnit,
         // Var
         //  x : s ∊ env
         //  t = inst s
         //  -----------
         //  infer env x = t
+        Expr::Unit => Type::Unit,
+        Expr::Int(_) => Type::Int,
         Expr::Var(x) => {
             let s = env.get(x).expect("Variable not found");
             inst(ctx, s)
@@ -333,6 +354,26 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
             new_env.insert(ident.clone(), poly_t);
             infer(ctx, new_env, body)
         }
+        Expr::Add { lhs, rhs } => {
+            let t0 = infer(ctx, env, lhs);
+            let t1 = infer(ctx, env, rhs);
+            unify(&t0, &t1);
+            if t0.is_int() && t1.is_int() {
+                return Type::Int;
+            }
+            if let Type::TRef(tv) = t1 {
+                let mut tv = tv.borrow_mut();
+                if let TypeVar::Unbound { id: _, level: _ } = *tv {
+                    *tv = TypeVar::Link(Type::Int);
+                    return Type::Int;
+                }
+            }
+            panic!();
+        }
+        Expr::Seq { lhs, rhs } => {
+            infer(ctx, env, lhs);
+            infer(ctx, env, rhs)
+        }
     }
 }
 
@@ -350,7 +391,8 @@ fn string_of_type_helper(
     next_name: &mut char,
 ) -> (String, bool) {
     match t {
-        Type::TUnit => ("()".to_string(), false),
+        Type::Unit => ("()".to_string(), false),
+        Type::Int => ("Int".to_string(), false),
         Type::TRef(tv) => match &*tv.borrow() {
             TypeVar::Link(inner_t) => string_of_type_helper(inner_t, name_map, next_name),
             TypeVar::Unbound { id, level: _ } => {
