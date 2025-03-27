@@ -1,5 +1,6 @@
 #[derive(Debug, PartialEq)]
 pub enum Token {
+    RParen,
     TkBackslash,
     TkDot,
     TkEof,
@@ -8,8 +9,10 @@ pub enum Token {
     TkIn,
     TkLParen,
     TkLet,
-    RParen,
+    TkNumber(i64),
+    TkPlus,
     TkUnit,
+    TkSemicolon,
 }
 
 pub struct Lexer<'a> {
@@ -65,12 +68,23 @@ impl<'a> Lexer<'a> {
                 'a'..='z' | 'A'..='Z' | '_' => {
                     return self.read_ident();
                 }
+                '+' => {
+                    self.next();
+                    return Token::TkPlus;
+                }
+                '-' => {
+                    return self.read_number();
+                }
                 '0'..='9' => {
-                    return self.read_unit();
+                    return self.read_number();
                 }
                 '\\' => {
                     self.next();
                     return Token::TkBackslash;
+                }
+                ';' => {
+                    self.next();
+                    return Token::TkSemicolon;
                 }
                 _ => {
                     panic!("Unexpected character: {}", ch);
@@ -97,8 +111,17 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_unit(&mut self) -> Token {
-        self.next();
-        Token::TkUnit
+    fn read_number(&mut self) -> Token {
+        let start = self.pos;
+        while let Some(ch) = self.peek() {
+            match ch {
+                '0'..='9' | '-' => {
+                    self.next();
+                }
+                _ => break,
+            }
+        }
+        let num = &self.input[start..self.pos];
+        Token::TkNumber(num.parse().unwrap())
     }
 }

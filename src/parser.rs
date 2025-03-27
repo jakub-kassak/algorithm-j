@@ -17,10 +17,10 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse(&mut self) -> Expr {
-        self.expr(false)
+        self.expr(false, false)
     }
 
-    fn expr(&mut self, in_app: bool) -> Expr {
+    fn expr(&mut self, in_app: bool, in_add: bool) -> Expr {
         let mut left = match &self.current_token {
             Token::TkLet => self.let_expr(),
             Token::TkIdent(_) => self.ident(),
@@ -28,23 +28,49 @@ impl<'a> Parser<'a> {
             Token::TkBackslash => self.lambda(),
             Token::TkLParen => {
                 self.consume(Token::TkLParen);
-                let expr = self.expr(false);
+                let expr = self.expr(false, false);
                 self.consume(Token::RParen);
                 expr
             }
+            Token::TkNumber(n) => {
+                let n = *n;
+                self.consume(Token::TkNumber(n));
+                Expr::Int(n)
+            }
             _ => panic!("Unexpected token: {:?}", self.current_token),
         };
+        println!("left: {:#?}", left);
 
         // Look ahead for function application
         while !in_app
             && self.current_token != Token::RParen
             && self.current_token != Token::TkEof
             && self.current_token != Token::TkIn
+            && self.current_token != Token::TkPlus
+            && self.current_token != Token::TkSemicolon
         {
-            let arg = self.expr(true);
+            let arg = self.expr(true, false);
             left = Expr::App {
                 func: Box::new(left),
                 arg: Box::new(arg),
+            }
+        }
+
+        while !in_app && self.current_token == Token::TkPlus {
+            self.consume(Token::TkPlus);
+            let right = self.expr(false, true);
+            left = Expr::Add {
+                lhs: Box::new(left),
+                rhs: Box::new(right),
+            }
+        } 
+
+        if !in_app && !in_add && self.current_token == Token::TkSemicolon {
+            self.consume(Token::TkSemicolon);
+            let right = self.expr(false, false);
+            left = Expr::Seq {
+                lhs: Box::new(left),
+                rhs: Box::new(right),
             }
         }
 
@@ -60,10 +86,10 @@ impl<'a> Parser<'a> {
         self.consume(Token::TkIdent(ident.clone())); // Consume identifier
 
         self.consume(Token::TkEq);
-        let value = self.expr(false);
+        let value = self.expr(false, false);
 
         self.consume(Token::TkIn);
-        let body = self.expr(false);
+        let body = self.expr(false, false);
 
         Expr::Let {
             ident,
@@ -96,7 +122,7 @@ impl<'a> Parser<'a> {
         self.consume(Token::TkIdent(ident.clone()));
 
         self.consume(Token::TkDot);
-        let body = self.expr(false);
+        let body = self.expr(false, false);
 
         Expr::Lam {
             ident,
