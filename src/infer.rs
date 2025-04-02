@@ -154,17 +154,22 @@ impl Drop for Env<'_> {
 
 // Instantiates a polytype by replacing its bound type variables with fresh monotypes
 fn inst(ctx: &mut TypeInferenceContext, poly: &PolyType) -> Type {
+    println!("inst - ctx: {:?}, poly: {:?}", ctx, poly);
     let mut tbl = HashMap::new();
     for tv in &poly.typevars {
         let new_t = ctx.newvar_t();
+        println!("inst - new_t: {:?}", new_t);
         tbl.insert(*tv, new_t);
     }
-    replace_tvs(&tbl, &poly.typ)
+    let result = replace_tvs(&tbl, &poly.typ);
+    println!("inst - result: {:?}", result);
+    result
 }
 
 // Replaces type variables in a type according to a substitution table
 fn replace_tvs(tbl: &HashMap<usize, Type>, t: &Type) -> Type {
-    match t {
+    println!("replace_tvs - tbl: {:?}, t: {:?}", tbl, t);
+    let result = match t {
         Type::Unit => Type::Unit,
         Type::Int => Type::Int,
         Type::TRef(tv) => match &*tv.borrow() {
@@ -182,12 +187,18 @@ fn replace_tvs(tbl: &HashMap<usize, Type>, t: &Type) -> Type {
             let b_new = replace_tvs(tbl, b);
             Type::Fn(Box::new(a_new), Box::new(b_new))
         }
-    }
+    };
+    println!("replace_tvs - result: {:?}", result);
+    result
 }
 
 // Checks if a type variable occurs in a type, updating levels as needed
 fn occurs(a_id: usize, a_level: usize, t: &Type) -> bool {
-    match t {
+    println!(
+        "occurs - a_id: {:?}, a_level: {:?}, t: {:?}",
+        a_id, a_level, t
+    );
+    let result = match t {
         Type::Unit => false,
         Type::Int => false,
         Type::TRef(tv) => match &mut *tv.borrow_mut() {
@@ -206,14 +217,14 @@ fn occurs(a_id: usize, a_level: usize, t: &Type) -> bool {
             let ret_result = occurs(a_id, a_level, ret);
             arg_result || ret_result
         }
-    }
+    };
+    println!("occurs - result: {:?}", result);
+    result
 }
 
 // Unifies two types, mutating type variables as needed
 fn unify(t1: &Type, t2: &Type) {
-    if std::ptr::eq(t1, t2) {
-        return;
-    }
+    println!("unify - t1: {:?}, t2: {:?}", t1, t2);
 
     match (t1, t2) {
         (Type::Unit, Type::Unit) => (),
@@ -234,6 +245,7 @@ fn unify(t1: &Type, t2: &Type) {
             if occurs(a_id, a_level, t2) {
                 panic!("TypeError: occurs check failed");
             } else {
+                println!("t2: {:#?}", t2);
                 *tv1.borrow_mut() = TypeVar::Link(t2.clone());
             }
         }
@@ -252,20 +264,29 @@ fn unify(t1: &Type, t2: &Type) {
 
 // Generalizes a type by collecting monomorphic type variables
 fn generalize(ctx: &TypeInferenceContext, t: &Type) -> PolyType {
+    println!("generalize - ctx: {:?}, t: {:?}", ctx, t);
     let typevars = find_all_tvs(ctx, t).into_iter().collect();
-    PolyType {
+    let result = PolyType {
         typevars,
         typ: t.clone(),
-    }
+    };
+    println!("generalize - result: {:?}", result);
+    result
 }
 
 fn find_all_tvs(ctx: &TypeInferenceContext, t: &Type) -> HashSet<usize> {
+    println!("find_all_tvs - ctx: {:?}, t: {:?}", ctx, t);
     let mut set = HashSet::new();
     find_all_tvs_helper(&mut set, ctx.current_level, t);
+    println!("find_all_tvs - set: {:?}", set);
     set
 }
 
 fn find_all_tvs_helper(set: &mut HashSet<usize>, current_level: usize, t: &Type) {
+    println!(
+        "find_all_tvs_helper - set: {:?}, current_level: {:?}, t: {:?}",
+        set, current_level, t
+    );
     match t {
         Type::Unit => (),
         Type::Int => (),
@@ -300,6 +321,10 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
         //  t = inst s
         //  -----------
         //  infer env x = t
+    println!("infer - ctx: {:#?}", ctx);
+    println!("infer - env: {:#?}", env);
+    println!("infer - expr: {:#?}", expr);
+    let result = match expr {
         Expr::Unit => Type::Unit,
         Expr::Int(_) => Type::Int,
         Expr::Var(x) => {
@@ -318,6 +343,7 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
             let t1 = infer(ctx, env, e1);
             let t_fn = Type::new_fn(t1, ctx.newvar_t());
             unify(&t0, &t_fn);
+            println!("t_fn: {:#?}", t_fn);
             if let Type::Fn(_, ty_res) = t_fn {
                 *ty_res
             } else {
@@ -335,6 +361,7 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
             let new_env = &mut env.child();
             new_env.insert(ident.clone(), poly_t);
             let t_prime = infer(ctx, new_env, body);
+            println!("t_prime: {:#?}", t_prime);
             Type::Fn(Box::new(t), Box::new(t_prime))
         }
         // Let
@@ -357,7 +384,11 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
         Expr::Add { lhs, rhs } => {
             let t0 = infer(ctx, env, lhs);
             let t1 = infer(ctx, env, rhs);
+            println!("t0: {:#?}", t0);
+            println!("t1: {:#?}", t1);
             unify(&t0, &t1);
+            println!("t0: {:#?}", t0);
+            println!("t1: {:#?}", t1);
             if t0.is_int() && t1.is_int() {
                 return Type::Int;
             }
@@ -374,7 +405,10 @@ pub fn infer(ctx: &mut TypeInferenceContext, env: &mut Env, expr: &Expr) -> Type
             infer(ctx, env, lhs);
             infer(ctx, env, rhs)
         }
-    }
+    };
+    println!("infer - expr: {:#?}", expr);
+    println!("infer - result: {:?}", result);
+    result
 }
 
 // --- Pretty Printing ---
