@@ -14,7 +14,6 @@ fn check(input: &str, expected: &str) -> bool {
     let input = input.trim();
     let mut parser = Parser::new(input);
     let expr = parser.parse();
-    println!("\t{:?}", expr);
 
     let mut ctx = TypeInferenceContext::new();
     let mut map = HashMap::new();
@@ -77,11 +76,9 @@ fn main() {
         (r#"\x. let y = x in y"#, "a -> a"),
         (r#"\x. let y = \z.x in y"#, "a -> b -> a"),
     ];
-    let res_add = true;
     let res_add = test_add
         .iter()
         .all(|(input, expected)| check(input, expected));
-    let result = true;
     let result = test_let_lam
         .iter()
         .all(|(input, expected)| check(input, expected));
@@ -106,7 +103,6 @@ fn main() {
         ),
         // (r#"let x = 1 in (); let x = \x.x in (); let x = x + x in (); x"#, "Int"),
     ];
-    let res_seq = true;
     let res_seq = test_seq
         .iter()
         .all(|(input, expected)| check(input, expected));

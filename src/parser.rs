@@ -39,7 +39,6 @@ impl<'a> Parser<'a> {
             }
             _ => panic!("Unexpected token: {:?}", self.current_token),
         };
-        println!("left: {:#?}", left);
 
         // Look ahead for function application
         while !in_app
